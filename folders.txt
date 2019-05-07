@@ -1,0 +1,5 @@
+firmware/
+folders.txt
+hardware/
+software/
+tools/

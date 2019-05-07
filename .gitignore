@@ -1,0 +1,10 @@
+# Ignore idea folders
+*.idea
+*.pyc
+**/venv
+
+# Ignore Eagle temp files
+*.s#*
+*.b#*
+*.l#*
+*.lck
