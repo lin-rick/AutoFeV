@@ -1,6 +1,5 @@
 # Main.py
 
-import cv2
 import numpy as np
 import os
 import struct
@@ -8,13 +7,14 @@ import struct
 import DetectChars
 import DetectPlates
 import PossiblePlate
-import socket
-import time
+
 import math
-import msvcrt
 import json
 import threading
-import cv2
+import cv2 as cv2
+import time
+import socket
+import angle_detection_function
 
 # module level variables ##########################################################################
 SCALAR_BLACK = (0.0, 0.0, 0.0)
@@ -24,18 +24,20 @@ SCALAR_GREEN = (0.0, 255.0, 0.0)
 SCALAR_RED = (0.0, 0.0, 255.0)
 EXIT_FLAG = 0
 showSteps = False
-LICENSE_PLATE = "824LXW"
+LICENSE_PLATE = "367NVE"
 
 #for control algorithm
-pixelError = 35
+pixelError = 60
 angleError = 20
-frameWidth = 512
-distanceError = 10
-
+frameWidth = 640
+distanceError = 30
 plateWeight = 0.2
 platePositionWeight = 0.2
 sensorWeight = 0.2
 angleWeight = 0.4
+
+offsetpercentageh =0.5
+offsetpercentagew = 0.15
 
 # offset value - use to
 yoffset = 200
@@ -51,92 +53,44 @@ roomba_data = {
     'Battery State': 0,
     'Battery Temperature': 0,
     'Battery Level': 0,
-    'Angle': 0,
-    'Distance Left': 0,
-    'Distance Right': 0,
+    'Distance': 0,
     'Direction': 0,
     'Current Movement': ord('k')
 }
 
-
-def unpack_dict(data_dict):
-    for key in data_dict.keys():
-        roomba_data[key] = data_dict[key]
-
-
-def command_loop():
-    global EXIT_FLAG
-
-    if msvcrt.kbhit():
-        key = msvcrt.getch().decode('UTF-8')
-        print(key)
-        if key:
-            client.send(key.encode())
-            if key == 'q':
-                client.close()
-                EXIT_FLAG = 1
-
-
-def video_grabber():
-    global EXIT_FLAG
-    global frames
-    cap = cv2.VideoCapture('http://192.168.4.1/html/cam_pic_new.php?')
-    while True:
-        ret, frame = cap.read()
-        frames.put(frame)
-        if (cv2.waitKey(1) & 0xFF == ord('q')) or EXIT_FLAG == 1:
-            EXIT_FLAG = 1
-            cv2.destroyAllWindows()
-            break
-
-
-def video_loop():
-    global EXIT_FLAG
-    cap = cv2.VideoCapture('http://192.168.4.1/html/cam_pic_new.php?')
-    while True:
-        # Capture frame-by-frame
-        ret, frame = cap.read()
-
-        # Our operatoins on the frame come here
-        # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # Display the resulting frame
-        cv2.imshow('frame', frame)
-        # Quit procedure
-        if (cv2.waitKey(1) & 0xFF == ord('q')) or EXIT_FLAG == 1:
-            EXIT_FLAG = 1
-            cv2.destroyAllWindows()
-            break
-
+def gstreamer_pipeline (capture_width=640, capture_height=400, display_width=640, display_height=400, framerate=30, flip_method=0, buffer_size=3) :
+    return ('nvarguscamerasrc ! ' 
+    'video/x-raw(memory:NVMM), '
+    'width=(int)%d, height=(int)%d,'
+    'format=(string)NV12, framerate=(fraction)%d/1 ! '
+    'nvvidconv flip-method=%d ! '
+    'video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! '
+    'videoconvert ! '
+    'video/x-raw, format=(string)BGR ! appsink max-buffers=(int)%d drop=True'  % (capture_width,capture_height,framerate,flip_method,display_width,display_height,buffer_size))
 
 def recieve_loop(client):
     # Receive data dict
-    try: recv = client.recv(1).decode()
+    try:
+        packet = client.recv(12)
+        roomba_data['Battery State'] = ord(packet[1])
+        roomba_data['Battery Temperature'] = ord(packet[3])
+        # roomba_data['Battery Capacity'] = int.from_bytes(packet[5:7], byteorder='big', signed=False)
+        # roomba_data['Battery Level'] = int.from_bytes(packet[8:10], byteorder='big', signed=False)
+        capacity = struct.unpack("<H", packet[5:7])[0]
+        roomba_data['Battery Level'] = struct.unpack("<H", packet[8:10])[0] * 100 / capacity
+        roomba_data['Distance'] = ord(packet[10])
+        roomba_data['Direction'] = ord(packet[11])
+        print(roomba_data['Distance'])
     except:
+        #print("could not receive data packet")
         return 0
-    if recv == '<':
-        client.setblocking(True)
-        #num_bytes = int.from_bytes(client.recv(1), byteorder='big', signed=False)
-        num_bytes = ord(client.recv(1))
-        recv = client.recv(1).decode()
-        if recv == '>':
-            packet = client.recv(num_bytes)
-            roomba_data['Battery State'] = ord(packet[1])
-            roomba_data['Battery Temperature'] = ord(packet[3])
-            #roomba_data['Battery Capacity'] = int.from_bytes(packet[5:7], byteorder='big', signed=False)
-            #roomba_data['Battery Level'] = int.from_bytes(packet[8:10], byteorder='big', signed=False)
-            capacity = struct.unpack("<H", packet[5:7])[0]
-            roomba_data['Battery Level'] = struct.unpack("<H", packet[8:10])[0] * 100 / capacity
-            roomba_data['Angle'] = ord(packet[10])
-            roomba_data['Distance Left'] = ord(packet[11])
-            roomba_data['Distance Right'] = ord(packet[12])
-            roomba_data['Direction'] = ord(packet[13])
-            print(roomba_data)
-            client.setblocking(False)
 
 ###################################################################################################
 def main():
     global EXIT_FLAG
+    import time
+    import cv2
+
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client.connect(('192.168.4.1', 1024))
     client.setblocking(False)
@@ -145,40 +99,58 @@ def main():
     if blnKNNTrainingSuccessful == False:                               # if KNN training was not successful
         print("\nerror: KNN traning was not successful\n")  # show error message
         return                                                          # and exit program
+
+    angle_detection_function.setup_function()
     # end if
     # cap = cv2.VideoCapture('licPlateVideo/IMG_0326.MOV')
-    cap = cv2.VideoCapture('http://192.168.4.1/html/cam_pic_new.php?')
+    # cap = cv2.VideoCapture('http://192.168.4.1/html/cam_pic_new.php?')
+
+    cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
+
     plateLocationX = 0
-    while(cap.isOpened()):
-        starttime = cv2.getTickCount()
+
+
+    if (cap.isOpened()):
+        window_handle = cv2.namedWindow('CSI Camera', cv2.WINDOW_AUTOSIZE)
+    else:
+        print("Cap object not opened\n")
+        quit()
+
+    while cv2.getWindowProperty('CSI Camera', 0) >= 0:
         ret, imgOriginalScene = cap.read()
+
+        starttime = cv2.getTickCount()
+        plateLocationX_result,listChar, angle, confident, image_license_only = readPlate(imgOriginalScene)
+        if angle is not "None":
+            print(angle)
         endtime = cv2.getTickCount()
         time = (endtime-starttime)/cv2.getTickFrequency()
-        if time > 0.015:
-            #print("Cap.read time: " + str(time))
-            pass
-        plateLocationX_result,listChar = readPlate(imgOriginalScene)
+        # if time > 0.08:
+            # print("readPlate time: " + str(time))
+
+        # print("Receive loop \n")
         recieve_loop(client)
 
         if plateLocationX_result is not 0:
             plateLocationX = plateLocationX_result
             plateLocationX = plateLocationX - (frameWidth / 2)
             #print(plateLocationX)
-        # reads the location of the license plate
 
-        #recieve_loop(client)
-        cv2.imshow('output', imgOriginalScene)
+        else:
+            plateLocationX = -1
+
+        cv2.imshow('CSI Camera', imgOriginalScene)
+        if image_license_only is not None:
+            cv2.imshow('Cropped Plate', image_license_only)
 
 
 ############################################################################################
         # test control algorithm
-        angle, distanceRight, distanceLeft, direction = roomba_data['Angle'], roomba_data['Distance Right'], roomba_data['Distance Left'], roomba_data['Direction']
+        distance, direction = roomba_data['Distance'], chr(roomba_data['Direction'])
 
         #define weights
-        #resets every loop
         rightWeight = 0
         leftWeight = 0
-        distanceAverage = (distanceLeft + distanceRight)/2
 
 
         # get lead vehicle angle
@@ -187,106 +159,94 @@ def main():
         # checks both the average value and the range of the distance sensed
 
         prev_move = roomba_data['Current Movement']
-
-       # if (plateLocationX >= pixelError) or ((angle >= 10 and direction == 0) and 0):
-       #  roomba_data['Current Movement'] = ord('l')
-       #      if prev_move is not roomba_data['Current Movement']:
-       #          client.send("d")  # turn right
-       #          print("right")
-       #      pass
-       #  elif (plateLocationX <= -pixelError) or ((angle >= 10 and direction == 1) and 0):
-       #      roomba_data['Current Movement'] = ord('j')
-       #      if prev_move is not roomba_data['Current Movement']:
-       #          client.send("a")  # turn left
-       #          print("left")
-       #      pass
-       #
-       #  elif distanceAverage > 35 and abs(distanceRight - distanceLeft) <= distanceError:
-       #      roomba_data['Current Movement'] = ord('i')
-       #      if prev_move is not roomba_data['Current Movement']:
-       #          client.send("i")  # drive forward
-       #          print("forward")
-       #      pass
-       #  elif (distanceAverage <= 35 or distanceAverage >= 60) and abs(distanceRight - distanceLeft) <= distanceError:
-       #      roomba_data['Current Movement'] = ord('k')
-       #      if prev_move is not roomba_data['Current Movement']:
-       #          client.send("k")  # stop
-       #          print("stop")
-       #      pass
-       #
-       #  # else if a license plate is not detected
-       #  else:
-       #      roomba_data['Current Movement'] = ord('k')
-       #      if prev_move is not roomba_data['Current Movement']:
-       #          client.send("k")  # stop
-       #          print("stop")
-       #      pass
-
-        ###########################################################
-         # WEIGHTED ALGORITHM
-
-
-         # weights
-
-        # if plate if detected
-         if plateLocationX != 0:
-             rightWeight = rightWeight + plateWeight
-             leftWeight = leftWeight + plateWeight
-
-        # plate location to determine direction
-         if plateLocationX >= pixelError:
-             rightWeight = rightWeight + platePositionWeight
-         elif plateLocationX <= pixelError:
-             leftWeight = leftWeight + platePositionWeight
-
-        # sensors to determine direction
-         if distanceRight < distanceLeft and abs(distanceRight - distanceLeft) >= distanceError:
-             rightWeight = rightWeight + sensorWeight
-         elif distanceRight > distanceLeft and abs(distanceRight - distanceLeft) >= distanceError:
-             leftWeight = leftWeight + sensorWeight
-
-        # # weight of angle from machine learning
-        #  if angle > angleError and angle < 90:  # 90 is upper limit for turning right
-        #      rightWeight = rightWeight + angleWeight
-        #  elif angle < (360 - angleError) and angle > 270: # 270 is upper limit for turning left
-        #      leftWeight = leftWeight + angleWeight
-
-
-         if distanceAverage >= 20 and abs(distanceRight - distanceLeft) <= distanceError:
-             if prev_move is not roomba_data['Current Movement']:
-                 client.send("i")  # drive forward
-                 print("forward")
-             pass
-         elif distanceAverage <= 15 and abs(distanceRight - distanceLeft) <= distanceError:
+        if (plateLocationX >= pixelError) and plateLocationX != -1:
+            roomba_data['Current Movement'] = ord('d')
             if prev_move is not roomba_data['Current Movement']:
-                client.send("k")  # stop
+                client.send("d".encode())
+                print("right")
+            pass
+        elif (plateLocationX <= -pixelError) and plateLocationX != -1:
+            roomba_data['Current Movement'] = ord('a')
+            if prev_move is not roomba_data['Current Movement']:
+                client.send("a".encode())
+                print("left")
+            pass
+
+        elif distance > distanceError:
+            roomba_data['Current Movement'] = ord('w')
+            if prev_move is not roomba_data['Current Movement']:
+                client.send("w".encode())
+                print("forward")
+            pass
+        elif distance <= distanceError:
+            roomba_data['Current Movement'] = ord('s')
+            if prev_move is not roomba_data['Current Movement']:
+                client.send("s".encode())
                 print("stop")
             pass
-         #if rightWeight > leftWeight:
-             #turn right
-         #elif leftWeight > rightWeight:
-             #turn left
-        print("rightWeight")
-        print("leftWeight")
+
+        # else if a license plate is not detected
+        else:
+            roomba_data['Current Movement'] = ord('s')
+            if prev_move is not roomba_data['Current Movement']:
+                #process_cmd(roomba, "s")  # stop
+                client.send("s".encode())
+                print("stop")
+            pass
+
+        ###########################################################
+        # # WEIGHTED ALGORITHM
+        # if distanceAverage >= 20 and abs(distanceRight - distanceLeft) <= distanceError:
+        #     client.send("i")  # drive forward
+        # elif distanceAverage <= 15 and abs(distanceRight - distanceLeft) <= distanceError:
+        #     client.send("k")  # stop
+        #
+        # # weights
+        #
+        # # if plate if detected
+        # if plateLocationX != 0:
+        #     rightWeight = rightWeight + plateWeight
+        #     leftWeight = leftWeight + plateWeight
+        #
+        # # plate location to determine direction
+        # if plateLocationX >= pixelError:
+        #     rightWeight = rightWeight + platePositionWeight
+        # elif plateLocationX <= pixelError:
+        #     leftWeight = leftWeight + platePositionWeight
+        #
+        # # sensors to determine direction
+        # if distanceRight < distanceLeft and abs(distanceRight - distanceLeft) >= distanceError:
+        #     rightWeight = rightWeight + sensorWeight
+        # elif distanceRight > distanceLeft and abs(distanceRight - distanceLeft) >= distanceError:
+        #     leftWeight = leftWeight + sensorWeight
+        #
+        # # weight of angle from machine learning
+        # if angle > angleError and angle < 90:  # 90 is upper limit for turning right
+        #     rightWeight = rightWeight + angleWeight
+        # elif angle < (360 - angleError) and angle > 270: # 270 is upper limit for turning left
+        #     leftWeight = leftWeight + angleWeight
+        #
+        # if rightWeight > leftWeight:
+        #     #turn right
+        # elif leftWeight > rightWeight:
+        #     #turn left
 
 
 ################################################################################################
-        key = chr(cv2.waitKey(1) & 0xFF)
-        if ord(key) is not 255:
-            print(key)
-            client.send(key.encode())
+        key = chr(cv2.waitKey(20) & 0xFF)
+        if key is not 'q' and key is not ('s' or 'w' or 'd' or 'a'):
+            pass
         elif (key == 'q') or EXIT_FLAG == 1:
             print("quit")
-            client.send(key.encode())
+            client.send('q'.encode())
+            #process_cmd(roomba, key.encode())
             EXIT_FLAG = 1
-            cv2.destroyAllWindows()
-            client.close()
+            break
+        elif (key == 's' or key == 'w' or key == 'a' or key == 'd'):
+            print(key)
+            client.send(key.encode())
 
-        if EXIT_FLAG == 1:
-            raise SystemExit()
-        else:
-            pass
-    return
+    cap.release()
 
 # end main
 ###################################################################################################
@@ -303,7 +263,7 @@ def readPlate(imgOriginalScene):
     #    print("\nerror: image not read from file \n\n")  # print error message to std out
     #    os.system("pause")                                  # pause so user can see error message
     #    return                                              # and exit program
-    imgReduceSearchArea = imgOriginalScene
+    imgReduceSearchArea = imgOriginalScene  # not yet implement
     #imgReduceSearchArea = imgOriginalScene[yoffset:yoffset2, xoffset:xoffset2] # limit the searching area to improve reading speed
                                                             # since the vehicle plate only appear at a certain area when
                                                             # following, we can limit search area to 50% area of the
@@ -326,6 +286,9 @@ def readPlate(imgOriginalScene):
     #cv2.imshow("imgOriginalScene", imgOriginalScene)            # show scene image
     intPlateCenterX = 0
     listChar = None
+    angle = "None"
+    confident=0
+    image_license_only = None
     if (len(listOfPossiblePlates) != 0):                          # if no plates were found
                                                        # else
                 # if we get in here list of possible plates has at least one plate
@@ -339,11 +302,18 @@ def readPlate(imgOriginalScene):
         licPlate = listOfPossiblePlates[0]
         ((intPlateCenterX, intPlateCenterY), (intPlateWidth, intPlateHeight),fltCorrectionAngleInDeg) = licPlate.rrLocationOfPlateInScene
         listChar = licPlate.listChar
+        #drawRedRectangleAroundPlate(imgOriginalScene, licPlate, SCALAR_RED)  # draw red rectangle around plate
+
+        #writeLicensePlateCharsOnImage(imgOriginalScene,licPlate)  # write license plate text on the image
+
         num_chars = len(licPlate.strChars)
         if num_chars is not 0:
             char_width = intPlateWidth/num_chars
             index = licPlate.strChars.find(LICENSE_PLATE)
             if index is not -1:
+                #print("got a plate")
+                endtime = cv2.getTickCount()
+                #print("read KNN time", ((endtime-starttime)/cv2.getTickFrequency()))
                 firstCharStart = listChar[index].intBoundingRectX
                 firstCharStart = firstCharStart/1.6
                 lastCharEnd = listChar[index+5].intBoundingRectX + listChar[index+5].intBoundingRectWidth
@@ -363,27 +333,29 @@ def readPlate(imgOriginalScene):
                 #     print("\nno characters were detected\n\n")  # show message
                 #     return                                          # and exit program
                 # # end if
-                drawRedRectangleAroundPlate(imgOriginalScene, licPlate, SCALAR_RED)             # draw red rectangle around plate
-            #    print("\nlicense plate read from image = " + licPlate.strChars + "\n")  # write license plate text to std out
-            #    print("----------------------------------------")
-                writeLicensePlateCharsOnImage(imgOriginalScene, licPlate)           # write license plate text on the image
-                #cv2.imshow("imgOriginalScene", imgOriginalScene)                # re-show scene image
-            #    cv2.imwrite("imgOriginalScene.png", imgOriginalScene)           # write image out to file
+
+                w1 = int((intPlateWidth/2) + intPlateWidth*offsetpercentagew)
+                h1 = int((intPlateHeight/2) + intPlateHeight*offsetpercentageh)
+                # crop the image of the plate for angle detection function
+                image_license_only = imgOriginalScene[
+                                     (int(intPlateCenterY-h1)):int((intPlateCenterY+h1)),
+                                     (int(intPlateCenterX-w1)):int((intPlateCenterX+w1))]
+                image_license_only = image_license_only.copy()
+                angle, confident = angle_detection_function.angle_detection_function(image_license_only)
+                #drawRedRectangleAroundPlate(imgOriginalScene, licPlate, SCALAR_RED)             # draw red rectangle around plate
+
+                #writeLicensePlateCharsOnImage(imgOriginalScene, licPlate)           # write license plate text on the image
+
                 cv2.circle(imgOriginalScene, (int(intPlateCenterX), int(intPlateCenterY)), 10, (0, 255, 0), 2)
             else:
                 intPlateCenterX = 0
     # end if else
 
-    #print('finish the program')
-    endtime=cv2.getTickCount()
-    time = (endtime - starttime) / cv2.getTickFrequency()
-    if time > 0.010:
-        #print("Read Plate Time:" + str(time))
-        pass
-    #cv2.waitKey(0)					# hold windows open until user presses a key
 
 
-    return intPlateCenterX,listChar
+
+
+    return intPlateCenterX, listChar, angle, confident, image_license_only
     #end ReadPlate function
 ###################################################################################################
 def drawRedRectangleAroundPlate(imgOriginalScene, licPlate, color):

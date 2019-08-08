@@ -1,0 +1,1 @@
+/usr/lib/vino/vino-server --display=:0.0

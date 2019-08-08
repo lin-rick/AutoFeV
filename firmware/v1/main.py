@@ -11,7 +11,6 @@ import json
 
 EXIT_FLAG = 0
 
-
 def process_cmd():
     global EXIT_FLAG
     while True:
@@ -22,6 +21,10 @@ def process_cmd():
             LB = roomba.read_LB()
             print(LB)
 
+        # Loopback test for testing socket connection
+        elif command == 't':
+            conn.send('t'.encode())
+
         elif command == 'q':
             print('quit')
             roomba.send_command(Bytes.Commands.power_down)
@@ -31,7 +34,12 @@ def process_cmd():
             EXIT_FLAG = 1  # Exit program
             break
 
-        else:
+        elif command == 'x':
+            roomba.play_song()
+            conn.send('x'.encode())
+
+        elif command is not None:
+            print(command)
             roomba.process_move_cmd(command)
             roomba.process_radius_cmd(command)
 
@@ -50,28 +58,24 @@ def periodic_events():
 
 def read_stream():
     global EXIT_FLAG
-    #pin settings for ultrasonic sensors
-    TRIG_L, TRIG_R, ECHO_L, ECHO_R, d = Roomba.Roomba.ultraSetup(roomba)
+    # pin settings for ultrasonic sensors
+    TRIG, ECHO = Roomba.Roomba.ultraSetup(roomba)
     while True:
+        time.sleep(0.1)
         if EXIT_FLAG:
             break
         packet = roomba.read_stream_packet()
-
         # getting distance from ultrasonics sensors
-        angle, distanceRight, distanceLeft, direction = Roomba.Roomba.ultraDistance(roomba, TRIG_L, TRIG_R, ECHO_L, ECHO_R, d)
-        #print(angle, distanceLeft, distanceRight, direction)
-        if angle > 255:
-            angle = 255
-        if distanceRight > 255:
-            distanceRight = 255
-        if distanceLeft > 255:
-            distanceLeft = 255
-        packet += bytes([angle, distanceLeft, distanceRight, direction])
-        conn.send('<'.encode())
-        conn.send(bytes([len(packet)]))
-        conn.send('>'.encode())
+        distance = Roomba.Roomba.ultraDistance(roomba, TRIG, ECHO)
+        # print(angle, distanceLeft, distanceRight, direction)
+        if distance > 255:
+            distance = 255
+        direction = roomba.CURRENT_DIRECTION
+        packet += bytes([distance, ord(direction)])
+        # conn.send('<'.encode())
+        # conn.send(bytes([len(packet)]))
+        # conn.send('>'.encode())
         conn.sendall(packet)
-
 
 
 def send_dict(data_dict):
@@ -84,6 +88,7 @@ def send_dict(data_dict):
 
 
 if __name__ == "__main__":
+    time.sleep(5)
     global EXIT_FLAG
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -103,9 +108,9 @@ if __name__ == "__main__":
     roomba.send_command(Bytes.Commands.oi_start)
     roomba.send_command(Bytes.Commands.safe_mode)
     time.sleep(0.2)
-    #roomba.ser.write(b'\x8c\x00\x05C\x10H\x18J\x08L\x10O\x20')
+    roomba.ser.write(b'\x8c\x00\x05C\x10H\x18J\x08L\x10O\x20')
     time.sleep(0.2)
-    #roomba.ser.write(b'\x8d\x00')
+    roomba.ser.write(b'\x8d\x00')
     time.sleep(2)
     packet_ids = Bytes.Sensors.BAT_LIST
     roomba.req_open_stream(packet_ids)

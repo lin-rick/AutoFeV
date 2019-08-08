@@ -14,17 +14,27 @@ class Roomba:
         self.pwmR = 0
         self.PWM_LIMIT = 230
         self.PWM_INCR = 25
+        self.PWM_DEFAULT = 50
         self.velocity = 0
         self.radius = 0
         self.DEFAULT_RADIUS = 100  # 10 cm turn radius
         self.DEFAULT_VELOCITY = 150  # moving at speed of 15cm/s
         self.battery = {'Battery State': 0, 'Battery Temperature': 0, 'Battery Level': 0, 'Battery Capacity': 1}
+        self.CURRENT_DIRECTION = 's'  # w,a,s,d
 
     def send_command(self, command):
         if self.ser.isOpen() is True:
             self.ser.write(command)
         else:
             print('Error: Serial not Open')
+
+    def play_song(self):
+        self.send_command(b.Commands.safe_mode)
+        time.sleep(0.2)
+        self.ser.write(b'\x8c\x00\x05C\x10H\x18J\x08L\x10O\x20')
+        time.sleep(0.2)
+        self.ser.write(b'\x8d\x00')
+        time.sleep(2)
 
     def drive_pwm(self):
         if self.ser.isOpen() is True:
@@ -95,15 +105,18 @@ class Roomba:
 # controlling with PWM
     def process_move_cmd(self, command):
         if command == 'w':
-            if self.pwmL == self.pwmR and self.pwmL < self.PWM_LIMIT and self.pwmR < self.PWM_LIMIT:
-                self.pwmL += self.PWM_INCR
-                self.pwmR += self.PWM_INCR
-            else:
-                if self.pwmR < self.pwmL < self.PWM_LIMIT:
-                    self.pwmL = self.pwmR
-                elif self.pwmR < self.PWM_LIMIT:
-                    self.pwmR = self.pwmL
+            # if self.pwmL == self.pwmR and self.pwmL < self.PWM_LIMIT and self.pwmR < self.PWM_LIMIT:
+            #     self.pwmL += self.PWM_INCR
+            #     self.pwmR += self.PWM_INCR
+            # else:
+            #     if self.pwmR < self.pwmL < self.PWM_LIMIT:
+            #         self.pwmL = self.pwmR
+            #     elif self.pwmR < self.PWM_LIMIT:
+            #         self.pwmR = self.pwmL
+            self.pwmL = self.PWM_DEFAULT + 15
+            self.pwmR = self.PWM_DEFAULT + 15
             print('Left Motor: ', self.pwmL, 'Right Motor: ', self.pwmR)
+            self.CURRENT_DIRECTION = 'w'
             self.drive_pwm()
 
         elif command == 'a':
@@ -113,9 +126,10 @@ class Roomba:
             if self.pwmR > self.PWM_LIMIT:
                 self.pwmL -= self.PWM_INCR
             '''
-            self.pwmL = -35
-            self.pwmR = 35
+            self.pwmL = -self.PWM_DEFAULT
+            self.pwmR = self.PWM_DEFAULT
             print('Left Motor: ', self.pwmL, 'Right Motor: ', self.pwmR)
+            self.CURRENT_DIRECTION = 'a'
             self.drive_pwm()
 
         elif command == 'd':
@@ -125,19 +139,23 @@ class Roomba:
             if self.pwmL > self.PWM_LIMIT:
                 self.pwmR -= self.PWM_INCR
             '''
-            self.pwmR = -35
-            self.pwmL = 35
+            self.pwmR = -self.PWM_DEFAULT
+            self.pwmL = self.PWM_DEFAULT
             print('Left Motor: ', self.pwmL, 'Right Motor: ', self.pwmR)
+            self.CURRENT_DIRECTION = 'd'
             self.drive_pwm()
 
         elif command == 's':
             if self.pwmL == self.pwmR and -self.PWM_LIMIT < self.pwmL <= 0:
                 self.pwmL -= self.PWM_INCR
                 self.pwmR -= self.PWM_INCR
+                self.pwmL = 0
+                self.pwmR = 0
             else:
                 self.pwmL = 0
                 self.pwmR = 0
             print('Left Motor: ', self.pwmL, 'Right Motor: ', self.pwmR)
+            self.CURRENT_DIRECTION = 's'
             self.drive_pwm()
 
         else:
@@ -166,74 +184,40 @@ class Roomba:
         # uses board pin numbers
         GPIO.setmode(GPIO.BCM)
 
-        # defining variables
-        distanceRight = 0.0
-        distanceLeft = 0.0
-        timeRight = 0.0
-        timeLeft = 0.0
-        angle = 0.0
-
-        # set distance between sensors in cm
-        d = 13.5
-
         # pin setup
-        TRIG_R = 2
-        ECHO_R = 3
+        TRIG = 2
+        ECHO = 3
 
-        TRIG_L = 22
-        ECHO_L = 27
+        GPIO.setup(TRIG, GPIO.OUT)
 
-        GPIO.setup(TRIG_L, GPIO.OUT)
-        GPIO.setup(TRIG_R, GPIO.OUT)
-
-        GPIO.setup(ECHO_L, GPIO.IN)
-        GPIO.setup(ECHO_R, GPIO.IN)
+        GPIO.setup(ECHO, GPIO.IN)
 
         # waiting for pins to become low
-        GPIO.output(TRIG_R, GPIO.LOW)
-        GPIO.output(TRIG_L, GPIO.LOW)
+        GPIO.output(TRIG, GPIO.LOW)
         time.sleep(2)
 
-        return TRIG_L, TRIG_R, ECHO_L, ECHO_R, d
+        return TRIG, ECHO
 
-    def ultraDistance(self, TRIG_L, TRIG_R, ECHO_L, ECHO_R, d):
+    def ultraDistance(self, TRIG, ECHO):
         # right ultrasonic sensor
-        GPIO.output(TRIG_R, GPIO.HIGH)
+        GPIO.output(TRIG, GPIO.HIGH)
         time.sleep(0.001)
-        GPIO.output(TRIG_R, GPIO.LOW)
-        startLeft = 0
-        startRight = 0
-        endLeft = 0
-        endRight = 0
+        GPIO.output(TRIG, GPIO.LOW)
 
-        while GPIO.input(ECHO_R) == False:
-            startRight = time.time()
-        while GPIO.input(ECHO_R) == True:
-            endRight = time.time()
+        timeout = time.time()
+        start = time.time()
+        while GPIO.input(ECHO) == False and start-timeout <= 1:
+            start = time.time()
 
-        timeRight = endRight - startRight
+        timeout = time.time()
+        end = time.time()
+        while GPIO.input(ECHO) == True and end-timeout <= 1:
+            end = time.time()
 
-        # left ultrasonic sensor
-        GPIO.output(TRIG_L, GPIO.HIGH)
-        time.sleep(0.001)
-        GPIO.output(TRIG_L, GPIO.LOW)
-
-        while GPIO.input(ECHO_L) == False:
-            startLeft = time.time()
-        while GPIO.input(ECHO_L) == True:
-            endLeft = time.time()
-
-        timeLeft = endLeft - startLeft
+        timediff = end - start
 
         # calculating distance
-        distanceLeft = timeLeft*34300/2
-        distanceRight = timeRight*34300/2
+        distance = timediff*34300/2
 
-        if distanceRight > distanceLeft:
-            angle = math.degrees(math.atan2((distanceRight-distanceLeft), d))
-            direction = 1  # 1 == left
-        else:
-            angle = math.degrees(math.atan2((distanceLeft - distanceRight), d))
-            direction = 0  # 0 == right
 
-        return int(angle), int(distanceRight), int(distanceLeft), int(direction)
+        return int(distance)
